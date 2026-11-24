@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O&S Loyalty</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#111;color:#fff;font-family:Arial,sans-serif;padding:16px}
+header{text-align:center;border-bottom:1px solid #b99750;padding:20px}
+h1{color:#d6b66c;letter-spacing:4px;font-size:38px}
+.card{background:#202020;padding:18px;border-radius:14px;margin:18px 0}
+input{width:100%;padding:14px;margin:7px 0;background:#333;color:white;border:1px solid #777;border-radius:8px}
+button{padding:13px;background:#c6a45b;color:#111;border:0;border-radius:8px;font-weight:bold;margin:5px;cursor:pointer}
+.secondary{background:#444;color:white}
+.customer{border-bottom:1px solid #555;padding:15px 0}
+.hidden{display:none}
+.qrbox{background:white;padding:12px;display:inline-block;border-radius:10px;margin:10px 0}
+#reader{width:100%;max-width:400px;margin:15px auto}
+small{color:#bbb}
+</style>
+</head>
+<body>
+<header>
+<h1>O&S</h1>
+<p>PELUQUERÍA BARBERÍA</p>
+<small>6 CORTES = 1 CORTE GRATIS</small>
+</header>
+<section class="card" id="login">
+<h2>Acceso administrador</h2>
+<input id="email" type="email" placeholder="Correo electrónico">
+<input id="password" type="password" placeholder="Contraseña">
+<button onclick="login()">ENTRAR</button>
+<p id="message"></p>
+</section>
+<main id="app" class="hidden">
+<div class="card">
+<h2>Nuevo cliente</h2>
+<input id="name" placeholder="Nombre completo">
+<input id="phone" placeholder="Teléfono">
+<button onclick="addCustomer()">AÑADIR CLIENTE</button>
+<p id="addMessage"></p>
+</div>
+<div class="card">
+<h2>📷 Escanear QR</h2>
+<p>Escanea el código QR del cliente para encontrar su tarjeta.</p>
+<button onclick="startScanner()">ABRIR CÁMARA</button>
+<button class="secondary" onclick="stopScanner()">CERRAR CÁMARA</button>
+<div id="reader"></div>
+<div id="scanResult"></div>
+</div>
+<div class="card">
+<h2>Clientes</h2>
+<button onclick="loadCustomers()">ACTUALIZAR</button>
+<div id="customers">Cargando...</div>
+</div>
+
+CERRAR SESIÓN
+
+</main>
+<script>
+const SUPABASE_URL = "https://txnvlqposxfdulhmctno.supabase.co";
+const SUPABASE_KEY = "sb_publishable_KG4cKaSev3NPJcz2OoJOgQ_phHMRhx_";
+const db = window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let scanner = null;
+let scannerRunning = false;
+async function login(){
+ const {error}=await db.auth.signInWithPassword({
+  email:document.getElementById("email").value.trim(),
+  password:document.getElementById("password").value
+ });
+ document.getElementById("message").textContent=error?error.message:"";
+ if(!error)showApp();
+}
+async function showApp(){
+ document.getElementById("login").classList.add("hidden");
+ document.getElementById("app").classList.remove("hidden");
+ await loadCustomers();
+}
+async function logout(){
+ await stopScanner();
+ await db.auth.signOut();
+ location.reload();
+}
+async function addCustomer(){
+ const full_name=document.getElementById("name").value.trim();
+ const phone=document.getElementById("phone").value.trim();
+ const msg=document.getElementById("addMessage");
+ if(!full_name||!phone){
+  msg.textContent="Completa todos los campos.";
+  return;
+ }
+ const {error}=await db.from("customers").insert({
+  full_name,
+  phone,
+  qr_code:crypto.randomUUID(),
+  stamps:0,
+  free_haircuts:0
+ });
+ msg.textContent=error?error.message:"Cliente añadido correctamente.";
+ if(!error){
+  document.getElementById("name").value="";
+  document.getElementById("phone").value="";
+  await loadCustomers();
+ }
+}
+async function loadCustomers(){
+ const box=document.getElementById("customers");
+ box.textContent="Cargando...";
+ const {data,error}=await db.from("customers")
+  .select("*").order("created_at",{ascending:false});
+ if(error){
+  box.textContent=error.message;
+  return;
+ }
+ box.innerHTML="";
+ if(!data.length){
+  box.textContent="Todavía no hay clientes.";
+  return;
+ }
+ data.forEach(c=>{
+  const div=document.createElement("div");
+  div.className="customer";
+  const title=document.createElement("h3");
+  title.textContent=c.full_name;
+  const phone=document.createElement("p");
+  phone.textContent=c.phone;
+  const progress=document.createElement("p");
+  progress.textContent="Sellos: "+c.stamps+"/6";
+  const free=document.createElement("p");
+  free.textContent="Cortes gratis: "+c.free_haircuts;
+  const qrTitle=document.createElement("p");
+  qrTitle.textContent="QR del cliente:";
+  const qrBox=document.createElement("div");
+  qrBox.className="qrbox";
+  const qr=document.createElement("div");
+  qrBox.appendChild(qr);
+  new QRCode(qr,{
+   text:c.qr_code,
+   width:150,
+   height:150,
+   correctLevel:QRCode.CorrectLevel.H
+  });
+  const add=document.createElement("button");
+  add.textContent="+ AÑADIR SELLO";
+  add.onclick=()=>addStamp(c);
+  const redeem=document.createElement("button");
+  redeem.textContent="CANJEAR GRATIS";
+  redeem.className="secondary";
+  redeem.onclick=()=>redeemFree(c);
+  const download=document.createElement("button");
+  download.textContent="DESCARGAR QR";
+  download.className="secondary";
+  download.onclick=()=>downloadQR(qr,c.full_name);
+  div.append(title,phone,progress,free,qrTitle,qrBox,document.createElement("br"),download,add,redeem);
+  box.appendChild(div);
+ });
+}
+function downloadQR(qr,name){
+ const canvas=qr.querySelector("canvas");
+ const img=qr.querySelector("img");
+ const url=canvas?canvas.toDataURL("image/png"):img.src;
+ const a=document.createElement("a");
+ a.href=url;
+ a.download="OS-QR-"+name.replace(/[^a-z0-9]/gi,"-")+".png";
+ a.click();
+}
+</script>
+<script>
+async function addStamp(c){
+ if(c.stamps>=6){
+  alert("El cliente ya tiene un corte gratis pendiente.");
+  return;
+ }
+ if(!confirm("¿Añadir un sello a "+c.full_name+"?"))return;
+ const {error}=await db.from("customers").update({
+  stamps:c.stamps+1,
+  last_visit:new Date().toISOString()
+ }).eq("id",c.id);
+ if(error){
+  alert(error.message);
+  return;
+ }
+ const visit=await db.from("visits").insert({
+  customer_id:c.id,
+  visit_type:"paid"
+ });
+ if(visit.error){
+  alert("Error guardando la visita: "+visit.error.message);
+  return;
+ }
+ alert("¡Sello añadido correctamente!");
+ await loadCustomers();
+}
+async function redeemFree(c){
+ if(c.stamps<6){
+  alert("Todavía necesita 6 sellos.");
+  return;
+ }
+ if(!confirm("¿Canjear un corte gratis para "+c.full_name+"?"))return;
+ const {error}=await db.from("customers").update({
+  stamps:0,
+  free_haircuts:(c.free_haircuts||0)+1,
+  last_visit:new Date().toISOString()
+ }).eq("id",c.id);
+ if(error){
+  alert(error.message);
+  return;
+ }
+ const visit=await db.from("visits").insert({
+  customer_id:c.id,
+  visit_type:"free"
+ });
+ if(visit.error){
+  alert("Error guardando la visita: "+visit.error.message);
+  return;
+ }
+ alert("¡Corte gratis canjeado!");
+ await loadCustomers();
+}
+async function startScanner(){
+ const result=document.getElementById("scanResult");
+ result.textContent="";
+ if(!window.Html5Qrcode){
+  result.textContent="No se pudo cargar el escáner. Recarga la página.";
+  return;
+ }
+ if(scannerRunning)return;
+ try{
+  if(!scanner)scanner=new Html5Qrcode("reader");
+  await scanner.start(
+   {facingMode:"environment"},
+   {fps:10,qrbox:{width:230,height:230}},
+   async(decodedText)=>{
+    await stopScanner();
+    await findCustomer(decodedText);
+   },
+   ()=>{}
+  );
+  scannerRunning=true;
+ }catch(e){
+  result.textContent="No se pudo abrir la cámara. Comprueba los permisos de Safari.";
+ }
+}
+async function stopScanner(){
+ if(scanner && scannerRunning){
+  try{
+   await scanner.stop();
+   scanner.clear();
+  }catch(e){}
+ }
+ scannerRunning=false;
+}
+async function findCustomer(code){
+ const result=document.getElementById("scanResult");
+ result.textContent="Buscando cliente...";
+ const {data,error}=await db.from("customers")
+  .select("*").eq("qr_code",code).maybeSingle();
+ if(error){
+  result.textContent=error.message;
+  return;
+ }
+ if(!data){
+  result.textContent="Cliente no encontrado. Comprueba el QR.";
+  return;
+ }
+ result.innerHTML="";
+ const title=document.createElement("h3");
+ title.textContent="Cliente: "+data.full_name;
+ const progress=document.createElement("p");
+ progress.textContent="Sellos: "+data.stamps+"/6";
+ const button=document.createElement("button");
+ button.textContent="+ AÑADIR SELLO";
+ button.onclick=()=>addStamp(data);
+ const redeem=document.createElement("button");
+ redeem.textContent="CANJEAR GRATIS";
+ redeem.className="secondary";
+ redeem.onclick=()=>redeemFree(data);
+ result.append(title,progress,button,redeem);
+}
+db.auth.getSession().then(({data})=>{
+ if(data.session)showApp();
+});
+</script>
+</body>
+</html>
